@@ -284,77 +284,83 @@ NSString * const MTLJSONAdapterThrownExceptionErrorKey = @"MTLJSONAdapterThrownE
 	NSMutableDictionary *dictionaryValue = [[NSMutableDictionary alloc] initWithCapacity:JSONDictionary.count];
 
 	for (NSString *propertyKey in [self.modelClass propertyKeys]) {
-		id JSONKeyPaths = self.JSONKeyPathsByPropertyKey[propertyKey];
-
-		if (JSONKeyPaths == nil) continue;
-
-		id value;
-
-		if ([JSONKeyPaths isKindOfClass:NSArray.class]) {
-			NSMutableDictionary *dictionary = [NSMutableDictionary dictionary];
-
-			for (NSString *keyPath in JSONKeyPaths) {
-				BOOL success = NO;
-				id value = [JSONDictionary mtl_valueForJSONKeyPath:keyPath success:&success error:error];
-
-				if (!success) return nil;
-
-				if (value != nil) dictionary[keyPath] = value;
-			}
-
-			value = dictionary;
-		} else {
-			BOOL success = NO;
-			value = [JSONDictionary mtl_valueForJSONKeyPath:JSONKeyPaths success:&success error:error];
-
-			if (!success) return nil;
-		}
-
-		if (value == nil) continue;
-
-		@try {
-			NSValueTransformer *transformer = self.valueTransformersByPropertyKey[propertyKey];
-			if (transformer != nil) {
-				// Map NSNull -> nil for the transformer, and then back for the
-				// dictionary we're going to insert into.
-				if ([value isEqual:NSNull.null]) value = nil;
-
-				if ([transformer respondsToSelector:@selector(transformedValue:success:error:)]) {
-					id<MTLTransformerErrorHandling> errorHandlingTransformer = (id)transformer;
-
-					BOOL success = YES;
-					value = [errorHandlingTransformer transformedValue:value success:&success error:error];
-
+		
+		@autoreleasepool {
+			
+			id JSONKeyPaths = self.JSONKeyPathsByPropertyKey[propertyKey];
+			
+			if (JSONKeyPaths == nil) continue;
+			
+			id value;
+			
+			if ([JSONKeyPaths isKindOfClass:NSArray.class]) {
+				NSMutableDictionary *dictionary = [NSMutableDictionary dictionary];
+				
+				for (NSString *keyPath in JSONKeyPaths) {
+					BOOL success = NO;
+					id value = [JSONDictionary mtl_valueForJSONKeyPath:keyPath success:&success error:error];
+					
 					if (!success) return nil;
-				} else {
-					value = [transformer transformedValue:value];
+					
+					if (value != nil) dictionary[keyPath] = value;
 				}
-
-				if (value == nil) value = NSNull.null;
+				
+				value = dictionary;
+			} else {
+				BOOL success = NO;
+				value = [JSONDictionary mtl_valueForJSONKeyPath:JSONKeyPaths success:&success error:error];
+				
+				if (!success) return nil;
 			}
-
-			dictionaryValue[propertyKey] = value;
-		} @catch (NSException *ex) {
-			NSLog(@"*** Caught exception %@ parsing JSON key path \"%@\" from: %@", ex, JSONKeyPaths, JSONDictionary);
-
-			// Fail fast in Debug builds.
-			#if DEBUG
-			@throw ex;
-			#else
-			if (error != NULL) {
-				NSDictionary *userInfo = @{
-					NSLocalizedDescriptionKey: [NSString stringWithFormat:@"Caught exception parsing JSON key path \"%@\" for model class: %@", JSONKeyPaths, self.modelClass],
-					NSLocalizedRecoverySuggestionErrorKey: ex.description,
-					NSLocalizedFailureReasonErrorKey: ex.reason,
-					MTLJSONAdapterThrownExceptionErrorKey: ex
-				};
-
-				*error = [NSError errorWithDomain:MTLJSONAdapterErrorDomain code:MTLJSONAdapterErrorExceptionThrown userInfo:userInfo];
+			
+			if (value == nil) continue;
+			
+			@try {
+				NSValueTransformer *transformer = self.valueTransformersByPropertyKey[propertyKey];
+				if (transformer != nil) {
+					// Map NSNull -> nil for the transformer, and then back for the
+					// dictionary we're going to insert into.
+					if ([value isEqual:NSNull.null]) value = nil;
+					
+					if ([transformer respondsToSelector:@selector(transformedValue:success:error:)]) {
+						id<MTLTransformerErrorHandling> errorHandlingTransformer = (id)transformer;
+						
+						BOOL success = YES;
+						value = [errorHandlingTransformer transformedValue:value success:&success error:error];
+						
+						if (!success) return nil;
+					} else {
+						value = [transformer transformedValue:value];
+					}
+					
+					if (value == nil) value = NSNull.null;
+				}
+				
+				dictionaryValue[propertyKey] = value;
+			} @catch (NSException *ex) {
+				NSLog(@"*** Caught exception %@ parsing JSON key path \"%@\" from: %@", ex, JSONKeyPaths, JSONDictionary);
+				
+				// Fail fast in Debug builds.
+#if DEBUG
+				@throw ex;
+#else
+				if (error != NULL) {
+					NSDictionary *userInfo = @{
+											   NSLocalizedDescriptionKey: [NSString stringWithFormat:@"Caught exception parsing JSON key path \"%@\" for model class: %@", JSONKeyPaths, self.modelClass],
+											   NSLocalizedRecoverySuggestionErrorKey: ex.description,
+											   NSLocalizedFailureReasonErrorKey: ex.reason,
+											   MTLJSONAdapterThrownExceptionErrorKey: ex
+											   };
+					
+					*error = [NSError errorWithDomain:MTLJSONAdapterErrorDomain code:MTLJSONAdapterErrorExceptionThrown userInfo:userInfo];
+				}
+				
+				return nil;
+#endif
 			}
-
-			return nil;
-			#endif
+			
 		}
+		
 	}
 
 	id model = [self.modelClass modelWithDictionary:dictionaryValue error:error];
@@ -559,32 +565,34 @@ NSString * const MTLJSONAdapterThrownExceptionErrorKey = @"MTLJSONAdapterThrownE
 			
 			NSMutableArray *models = [NSMutableArray arrayWithCapacity:dictionaries.count];
 			for (id JSONDictionary in dictionaries) {
-				if (JSONDictionary == NSNull.null) {
-					[models addObject:NSNull.null];
-					continue;
-				}
-				
-				if (![JSONDictionary isKindOfClass:NSDictionary.class]) {
-					if (error != NULL) {
-						NSDictionary *userInfo = @{
-							NSLocalizedDescriptionKey: NSLocalizedString(@"Could not convert JSON array to model array", @""),
-							NSLocalizedFailureReasonErrorKey: [NSString stringWithFormat:NSLocalizedString(@"Expected an NSDictionary or an NSNull, got: %@.", @""), JSONDictionary],
-							MTLTransformerErrorHandlingInputValueErrorKey : JSONDictionary
-						};
-						
-						*error = [NSError errorWithDomain:MTLTransformerErrorHandlingErrorDomain code:MTLTransformerErrorHandlingErrorInvalidInput userInfo:userInfo];
+				@autoreleasepool {
+					if (JSONDictionary == NSNull.null) {
+						[models addObject:NSNull.null];
+						continue;
 					}
-					*success = NO;
-					return nil;
+					
+					if (![JSONDictionary isKindOfClass:NSDictionary.class]) {
+						if (error != NULL) {
+							NSDictionary *userInfo = @{
+													   NSLocalizedDescriptionKey: NSLocalizedString(@"Could not convert JSON array to model array", @""),
+													   NSLocalizedFailureReasonErrorKey: [NSString stringWithFormat:NSLocalizedString(@"Expected an NSDictionary or an NSNull, got: %@.", @""), JSONDictionary],
+													   MTLTransformerErrorHandlingInputValueErrorKey : JSONDictionary
+													   };
+							
+							*error = [NSError errorWithDomain:MTLTransformerErrorHandlingErrorDomain code:MTLTransformerErrorHandlingErrorInvalidInput userInfo:userInfo];
+						}
+						*success = NO;
+						return nil;
+					}
+					
+					id model = [dictionaryTransformer transformedValue:JSONDictionary success:success error:error];
+					
+					if (*success == NO) return nil;
+					
+					if (model == nil) continue;
+					
+					[models addObject:model];
 				}
-				
-				id model = [dictionaryTransformer transformedValue:JSONDictionary success:success error:error];
-				
-				if (*success == NO) return nil;
-				
-				if (model == nil) continue;
-				
-				[models addObject:model];
 			}
 			
 			return models;
